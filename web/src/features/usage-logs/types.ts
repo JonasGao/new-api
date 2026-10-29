@@ -146,6 +146,9 @@ export interface LogOtherData {
     }
     // Reject / intercept reason (admin only)
     reject_reason?: string
+    // Stored request body audit markers (admin only, types 2 and 5)
+    request_body_size?: number
+    request_body_truncated?: boolean
     task_plugin?: TaskPluginInfo
   }
   root_info?: {

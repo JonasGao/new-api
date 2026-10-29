@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
@@ -31,6 +32,9 @@ func abortWithOpenAiMessage(c *gin.Context, statusCode int, message string, code
 			},
 		})
 	}
+	// The message is localized per request language; the fallback error row
+	// stores it in other.admin_info.fail_reason instead of Log.Content.
+	common.SetContextKey(c, constant.ContextKeyRelayFailReason, message)
 	c.Abort()
 	logger.LogError(c.Request.Context(), common.LogText("user %d | %s", userId, message))
 }

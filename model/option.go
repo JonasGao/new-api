@@ -268,6 +268,9 @@ func validateOptionValue(key string, value string) error {
 	if key == operation_setting.LogMaxRangeDaysOptionKey {
 		return operation_setting.ValidateLogMaxRangeDays(value)
 	}
+	if key == operation_setting.LogRequestBodyMaxBytesOptionKey {
+		return operation_setting.ValidateLogMaxRequestBodyBytes(value)
+	}
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
 	}

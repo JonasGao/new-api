@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { TFunction } from 'i18next'
+import { useQuery } from '@tanstack/react-query'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -35,6 +35,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { TFunction } from 'i18next'
 import {
   Copy,
   Check,
@@ -48,10 +49,12 @@ import {
   ShieldCheck,
   UserCog,
   Info,
+  Loader2,
   LogIn,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { CopyButton } from '@/components/copy-button'
 import { Dialog } from '@/components/dialog'
 import { StatusBadge, type StatusBadgeProps } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
@@ -62,11 +65,22 @@ import { BILLING_PRICING_VARS } from '@/features/pricing/lib/billing-expr'
 import { pluginUsageSchema } from '@/features/pricing/lib/plugin-pricing'
 import { PolicyDecisionRecord } from '@/features/system-settings/request-policies/decision-record'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
+import { toIntlLocale } from '@/i18n/languages'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
-import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
-import { translateServerText } from '@/lib/server-error-message'
+import {
+  formatLogQuota,
+  formatNumber,
+  formatTokens,
+  formatUseTime,
+} from '@/lib/format'
+import {
+  getServerErrorMessage,
+  requireServerSuccess,
+  translateServerText,
+} from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
+import { getLogRequestBody } from '../../api'
 import { AuditDetailFields } from '../../audit/components/audit-detail-fields'
 import type { UsageLog } from '../../data/schema'
 import {
@@ -390,6 +404,74 @@ function BillingBreakdown(props: {
   )
 }
 
+function RequestBodySection(props: { logId: number }) {
+  const { t, i18n } = useTranslation()
+  // The dialog body only exists while open, so one mount = one fetch per log.
+  const bodyQuery = useQuery({
+    queryKey: ['usage-logs', 'request-body', props.logId],
+    queryFn: async () =>
+      requireServerSuccess(await getLogRequestBody(props.logId)),
+    retry: false,
+    gcTime: 0,
+    meta: { errorToast: false },
+  })
+  const body = bodyQuery.data?.data
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+
+  return (
+    <DetailSection label={t('Request Body')}>
+      {bodyQuery.isPending && (
+        <div
+          role='status'
+          aria-label={t('Loading...')}
+          className='flex items-center justify-center py-4'
+        >
+          <Loader2 className='text-muted-foreground size-5 animate-spin' />
+        </div>
+      )}
+      {bodyQuery.isError && (
+        <p role='alert' className='text-xs wrap-break-word'>
+          {getServerErrorMessage(
+            bodyQuery.error,
+            t('Failed to fetch request body')
+          )}
+        </p>
+      )}
+      {body && (
+        <>
+          <div className='bg-background/60 relative min-w-0 overflow-hidden rounded border p-2'>
+            <CopyButton
+              value={body.body}
+              variant='ghost'
+              size='sm'
+              className='absolute top-1 right-1 h-5 w-5 p-0'
+              iconClassName='size-3'
+              aria-label={t('Copy to clipboard')}
+            />
+            <pre className='max-h-64 min-w-0 overflow-y-auto pr-6 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap'>
+              {body.body}
+            </pre>
+          </div>
+          {body.truncated && (
+            <>
+              <p className='text-muted-foreground text-xs wrap-break-word'>
+                {t('Request body was truncated to fit the storage limit')}
+              </p>
+              <DetailRow
+                label={t('Original size')}
+                value={t('{{bytes}} bytes', {
+                  bytes: formatNumber(body.size, locale),
+                })}
+                mono
+              />
+            </>
+          )}
+        </>
+      )}
+    </DetailSection>
+  )
+}
+
 function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   const { t } = useTranslation()
   const { log, other } = props
@@ -660,6 +742,11 @@ export function DetailsDialog(props: DetailsDialogProps) {
     props.log.type !== 6 &&
     (other?.request_path || conversionChain.length > 0)
 
+  const showRequestBody =
+    props.isAdmin &&
+    adminInfo?.request_body_size != null &&
+    (isConsume || props.log.type === 5)
+
   const useChannel = other?.admin_info?.use_channel
   const channelChain =
     useChannel && useChannel.length > 0 ? useChannel.join(' → ') : undefined
@@ -839,6 +926,9 @@ export function DetailsDialog(props: DetailsDialogProps) {
             </div>
           </DetailSection>
         )}
+
+        {/* Request body (admin only, consume/error logs with a stored body) */}
+        {showRequestBody && <RequestBodySection logId={props.log.id} />}
 
         {/* Quota saturation marker (admin only) */}
         {props.isAdmin && adminInfo?.request_policy?.length ? (

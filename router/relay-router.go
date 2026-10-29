@@ -64,7 +64,7 @@ func SetRelayRouter(router *gin.Engine) {
 	playgroundRouter := router.Group("/pg")
 	playgroundRouter.Use(middleware.RouteTag("relay"))
 	playgroundRouter.Use(middleware.SystemPerformanceCheck())
-	playgroundRouter.Use(middleware.UserAuth(), middleware.Distribute())
+	playgroundRouter.Use(middleware.UserAuth(), middleware.RelayRequestBodyLog(), middleware.Distribute())
 	{
 		playgroundRouter.POST("/chat/completions", controller.Playground)
 	}
@@ -87,29 +87,37 @@ func SetRelayRouter(router *gin.Engine) {
 		})
 	}
 	{
-		//http router
-		httpRouter := relayV1Router.Group("")
-		httpRouter.Use(middleware.Distribute())
+		// chat-class routes that capture the client request body for audit
+		// when the console option is enabled. RelayRequestBodyLog must run
+		// before Distribute so distributor aborts are still observed.
+		chatRouter := relayV1Router.Group("")
+		chatRouter.Use(middleware.RelayRequestBodyLog())
+		chatRouter.Use(middleware.Distribute())
 
 		// claude related routes
 		// TODO: /messages/count_tokens is disabled. The current controller.CountClaudeTokens
-		// httpRouter.POST("/messages/count_tokens", controller.CountClaudeTokens)
-		httpRouter.POST("/messages", func(c *gin.Context) {
+		// chatRouter.POST("/messages/count_tokens", controller.CountClaudeTokens)
+		chatRouter.POST("/messages", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatClaude)
 		})
 
 		// chat related routes
-		httpRouter.POST("/completions", func(c *gin.Context) {
+		chatRouter.POST("/completions", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAI)
 		})
-		httpRouter.POST("/chat/completions", func(c *gin.Context) {
+		chatRouter.POST("/chat/completions", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAI)
 		})
 
 		// response related routes
-		httpRouter.POST("/responses/compact", func(c *gin.Context) {
+		chatRouter.POST("/responses/compact", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIResponsesCompaction)
 		})
+	}
+	{
+		//http router
+		httpRouter := relayV1Router.Group("")
+		httpRouter.Use(middleware.Distribute())
 
 		// alpha search related routes (Codex standalone web search)
 		httpRouter.POST("/alpha/search", func(c *gin.Context) {

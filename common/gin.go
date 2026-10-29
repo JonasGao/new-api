@@ -117,6 +117,35 @@ func CleanupBodyStorage(c *gin.Context) {
 	}
 }
 
+// ReadBodyPrefix reads at most limit bytes from the start of the cached
+// request-body storage and returns the total stored size. The storage cursor
+// is restored to the start, and at most limit bytes are ever read, so
+// disk-backed bodies are not fully loaded into the heap.
+func ReadBodyPrefix(c *gin.Context, limit int) ([]byte, int64, error) {
+	storage, err := GetBodyStorage(c)
+	if err != nil {
+		return nil, 0, err
+	}
+	size := storage.Size()
+	if limit <= 0 {
+		return nil, size, nil
+	}
+	n := min(size, int64(limit))
+	if _, err := storage.Seek(0, io.SeekStart); err != nil {
+		return nil, 0, err
+	}
+	prefix := make([]byte, n)
+	if n > 0 {
+		if _, err := io.ReadFull(storage, prefix); err != nil {
+			return nil, 0, err
+		}
+	}
+	if _, err := storage.Seek(0, io.SeekStart); err != nil {
+		return nil, 0, err
+	}
+	return prefix, size, nil
+}
+
 func UnmarshalBodyReusable(c *gin.Context, v any) error {
 	storage, err := GetBodyStorage(c)
 	if err != nil {

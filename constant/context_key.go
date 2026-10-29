@@ -81,6 +81,23 @@ const (
 	// duplicate entries.
 	ContextKeyAuditLogged ContextKey = "audit_logged"
 
+	// ContextKeyLogRequestBodyCapture marks chat-class relay routes that opted
+	// into request-body logging. Record*Log captures the client body only when
+	// it is set, keeping the capture scope identical to the middleware
+	// registration scope.
+	ContextKeyLogRequestBodyCapture ContextKey = "log_request_body_capture"
+
+	// ContextKeyRelayLogRecorded marks that a usage-log row was written for the
+	// current relay request. The RelayRequestBodyLog fallback checks it to
+	// avoid a duplicate row for requests that failed before any row existed.
+	ContextKeyRelayLogRecorded ContextKey = "relay_log_recorded"
+
+	// ContextKeyRelayFailReason carries the client-facing failure reason of a
+	// relay request that aborted before any usage-log row was written. It is
+	// stored in other.admin_info.fail_reason, never in Log.Content, because
+	// abort messages are localized per request language.
+	ContextKeyRelayFailReason ContextKey = "relay_fail_reason"
+
 	// ContextKeyTokenAuditParams contains only the API token operation's safe metadata.
 	ContextKeyTokenAuditParams ContextKey = "token_audit_params"
 	// ContextKeyTokenAuditSucceeded disambiguates token responses that exceed the audit buffer.

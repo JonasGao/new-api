@@ -44,6 +44,8 @@ function Fixture() {
             LogConsumeEnabled: true,
             'log_setting.user_export_enabled': true,
             'log_setting.max_range_days': 30,
+            'log_setting.request_body_log_enabled': true,
+            'log_setting.request_body_log_max_bytes': 65536,
           }}
         />
       </SettingsPageProvider>
@@ -90,9 +92,17 @@ test('the page shows the four log modules in order, each with its own controls',
     'Server Log Management',
   ])
   const recording = screen.getByRole('group', { name: 'Log recording' })
-  expect(within(recording).getAllByRole('switch')).toHaveLength(1)
+  expect(within(recording).getAllByRole('switch')).toHaveLength(2)
   expect(
     within(recording).getByRole('switch', { name: 'Record quota usage' })
+  ).toBeVisible()
+  expect(
+    within(recording).getByRole('switch', { name: 'Record request bodies' })
+  ).toBeVisible()
+  expect(
+    within(recording).getByRole('spinbutton', {
+      name: 'Request body storage limit (bytes)',
+    })
   ).toBeVisible()
   const search = screen.getByRole('group', { name: 'Log search and export' })
   expect(
@@ -169,6 +179,78 @@ test('saving sends only the log export settings that changed', async () => {
   expect(api.put).toHaveBeenCalledWith('/api/option/', {
     key: 'log_setting.max_range_days',
     value: 90,
+  })
+})
+
+test('the request body fields render with the passed defaults', async () => {
+  await renderSettings()
+
+  expect(
+    screen.getByRole('switch', { name: 'Record request bodies' })
+  ).toBeChecked()
+  expect(
+    screen.getByRole('spinbutton', {
+      name: 'Request body storage limit (bytes)',
+    })
+  ).toHaveValue(65536)
+})
+
+test('toggling request body recording and changing the byte limit saves both options', async () => {
+  const user = userEvent.setup()
+  await renderSettings()
+  const bytes = screen.getByRole('spinbutton', {
+    name: 'Request body storage limit (bytes)',
+  })
+
+  await user.click(
+    screen.getByRole('switch', { name: 'Record request bodies' })
+  )
+  fireEvent.change(bytes, { target: { value: '8192' } })
+  await user.click(screen.getByRole('button', { name: 'Save log settings' }))
+
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2))
+  expect(api.put).toHaveBeenCalledWith('/api/option/', {
+    key: 'log_setting.request_body_log_enabled',
+    value: false,
+  })
+  expect(api.put).toHaveBeenCalledWith('/api/option/', {
+    key: 'log_setting.request_body_log_max_bytes',
+    value: 8192,
+  })
+})
+
+test('toggling request body recording leaves an unchanged byte limit untouched', async () => {
+  const user = userEvent.setup()
+  await renderSettings()
+
+  await user.click(
+    screen.getByRole('switch', { name: 'Record request bodies' })
+  )
+  await user.click(screen.getByRole('button', { name: 'Save log settings' }))
+
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
+  expect(api.put).toHaveBeenCalledWith('/api/option/', {
+    key: 'log_setting.request_body_log_enabled',
+    value: false,
+  })
+})
+
+test('changing only the byte limit leaves request body recording untouched', async () => {
+  const user = userEvent.setup()
+  await renderSettings()
+
+  fireEvent.change(
+    screen.getByRole('spinbutton', {
+      name: 'Request body storage limit (bytes)',
+    }),
+    { target: { value: '4096' } }
+  )
+  await user.click(screen.getByRole('button', { name: 'Save log settings' }))
+
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
+  expect(api.put).toHaveBeenCalledWith('/api/option/', {
+    key: 'log_setting.request_body_log_max_bytes',
+    value: 4096,
   })
 })
 

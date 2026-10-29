@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // logFilterFromQuery reads the log search shared by the log list and the log
@@ -52,6 +54,49 @@ func limitLogTimeRange(startTimestamp int64, endTimestamp int64) (int64, error) 
 		return 0, common.NewMessage("The time range cannot exceed {{days}} days", map[string]any{"days": maxRange / (24 * 60 * 60)})
 	}
 	return startTimestamp, nil
+}
+
+// GetLogRequestBody serves the admin-only lazy view of a log row's stored
+// request body. List and export projections never include the column.
+func GetLogRequestBody(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid log id")
+		return
+	}
+	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		common.ApiErrorT(c, "Request body is not available for logs stored in ClickHouse")
+		return
+	}
+	log, err := model.GetLogRequestBody(id)
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			common.SysError(common.LogText("failed to query log request body: %s", err.Error()))
+			common.ApiErrorT(c, "Failed to query logs")
+			return
+		}
+		common.ApiErrorT(c, "No request body stored for this log")
+		return
+	}
+	if log.RequestBody == "" {
+		common.ApiErrorT(c, "No request body stored for this log")
+		return
+	}
+	var other struct {
+		AdminInfo struct {
+			RequestBodySize      int64 `json:"request_body_size"`
+			RequestBodyTruncated bool  `json:"request_body_truncated"`
+		} `json:"admin_info"`
+	}
+	if err := common.Unmarshal([]byte(log.Other), &other); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"body":      log.RequestBody,
+		"truncated": other.AdminInfo.RequestBodyTruncated,
+		"size":      other.AdminInfo.RequestBodySize,
+	})
 }
 
 func GetAllLogs(c *gin.Context) {

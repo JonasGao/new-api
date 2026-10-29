@@ -53,6 +53,12 @@ const logSettingsSchema = z.object({
   log_setting: z.object({
     user_export_enabled: z.boolean(),
     max_range_days: z.number().int().min(1),
+    request_body_log_enabled: z.boolean(),
+    request_body_log_max_bytes: z
+      .number()
+      .int()
+      .min(1024)
+      .max(16 * 1024 * 1024),
   }),
 })
 
@@ -63,6 +69,8 @@ type LogSettingsSectionProps = {
     LogConsumeEnabled: boolean
     'log_setting.user_export_enabled': boolean
     'log_setting.max_range_days': number
+    'log_setting.request_body_log_enabled': boolean
+    'log_setting.request_body_log_max_bytes': number
   }
 }
 
@@ -78,6 +86,10 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
         user_export_enabled:
           props.defaultValues['log_setting.user_export_enabled'],
         max_range_days: props.defaultValues['log_setting.max_range_days'],
+        request_body_log_enabled:
+          props.defaultValues['log_setting.request_body_log_enabled'],
+        request_body_log_max_bytes:
+          props.defaultValues['log_setting.request_body_log_max_bytes'],
       },
     }),
     [props.defaultValues]
@@ -99,6 +111,14 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
         values.log_setting.user_export_enabled,
       ],
       ['log_setting.max_range_days', values.log_setting.max_range_days],
+      [
+        'log_setting.request_body_log_enabled',
+        values.log_setting.request_body_log_enabled,
+      ],
+      [
+        'log_setting.request_body_log_max_bytes',
+        values.log_setting.request_body_log_max_bytes,
+      ],
     ] as const
     for (const [key, value] of changes) {
       if (value === props.defaultValues[key]) continue
@@ -144,6 +164,54 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
                   </FormControl>
                   <FormMessage />
                 </SettingsSwitchItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='log_setting.request_body_log_enabled'
+              render={({ field }) => (
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <FormLabel>{t('Record request bodies')}</FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Store a truncated copy of the client request body on chat-class relay logs for auditing. Visible to administrators only.'
+                      )}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </SettingsSwitchItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='log_setting.request_body_log_max_bytes'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    {t('Request body storage limit (bytes)')}
+                  </FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={1024}
+                      step={1}
+                      {...safeNumberFieldProps(field)}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Stored request bodies are truncated to this many bytes. Larger bodies keep their original size in the log details.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
               )}
             />
           </div>

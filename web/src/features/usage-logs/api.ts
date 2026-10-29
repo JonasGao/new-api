@@ -149,6 +149,15 @@ export async function getUserInfo(
   return res.data
 }
 
+export async function getLogRequestBody(id: number): Promise<{
+  success: boolean
+  message?: string
+  data?: { body: string; truncated: boolean; size: number }
+}> {
+  const res = await api.get(`/api/log/body/${id}`)
+  return res.data
+}
+
 // ============================================================================
 // MjProxy (Drawing) Logs API
 // ============================================================================

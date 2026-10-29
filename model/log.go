@@ -1,12 +1,15 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -76,6 +79,11 @@ type Log struct {
 	RequestId         string `json:"request_id,omitempty" gorm:"type:varchar(64);index:idx_logs_request_id;default:''"`
 	UpstreamRequestId string `json:"upstream_request_id,omitempty" gorm:"type:varchar(128);index:idx_logs_upstream_request_id;default:''"`
 	Other             string `json:"other"`
+	// RequestBody holds a truncated copy of the client's original relay
+	// request body for audit. Never serialized through the Log JSON: it is
+	// excluded from list/export queries and served only by the dedicated
+	// admin endpoint.
+	RequestBody string `json:"-"`
 }
 
 // don't use iota, avoid change log type value
@@ -140,9 +148,20 @@ func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		order = clickHouseLogOrder("")
 	}
-	err = LOG_DB.Model(&Log{}).Where("token_id = ?", tokenId).Order(order).Limit(common.MaxRecentItems).Find(&logs).Error
+	err = LOG_DB.Model(&Log{}).Omit("request_body").Where("token_id = ?", tokenId).Order(order).Limit(common.MaxRecentItems).Find(&logs).Error
 	formatUserLogs(logs, 0)
 	return logs, err
+}
+
+// GetLogRequestBody loads only the columns the admin request-body endpoint
+// needs: the stored body plus the other JSON that carries its markers.
+func GetLogRequestBody(id int) (*Log, error) {
+	var log Log
+	err := LOG_DB.Model(&Log{}).Select("id", "request_id", "other", "request_body").Where("id = ?", id).First(&log).Error
+	if err != nil {
+		return nil, err
+	}
+	return &log, nil
 }
 
 func RecordLog(userId int, logType int, content *common.Message) {
@@ -275,12 +294,43 @@ func RecordTopupLog(userId int, content *common.Message, callerIp string, paymen
 	}
 }
 
+// captureRequestBodyForLog stores a bounded copy of the client's original
+// request body on the row and marks its size and truncation in
+// other.admin_info. It only runs for requests flagged by RelayRequestBodyLog
+// while the console option is enabled.
+func captureRequestBodyForLog(c *gin.Context, other *LogOther) string {
+	if other == nil || !common.GetContextKeyBool(c, constant.ContextKeyLogRequestBodyCapture) {
+		return ""
+	}
+	logSetting := operation_setting.GetLogSetting()
+	if !logSetting.RequestBodyLogEnabled || logSetting.RequestBodyLogMaxBytes <= 0 {
+		return ""
+	}
+	// ClickHouse log rows cannot serve the body back through any API.
+	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		return ""
+	}
+	prefix, size, err := common.ReadBodyPrefix(c, logSetting.RequestBodyLogMaxBytes)
+	if err != nil || size == 0 {
+		return ""
+	}
+	other.SetAdmin("request_body_size", size)
+	if int64(len(prefix)) < size {
+		other.SetAdmin("request_body_truncated", true)
+	}
+	// Byte-level truncation can split a multi-byte rune and clients may send
+	// invalid UTF-8; PostgreSQL text columns reject both and the insert would
+	// fail, so strip invalid sequences.
+	return string(bytes.ToValidUTF8(prefix, nil))
+}
+
 func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string, tokenName string, content string, tokenId int, useTimeSeconds int,
 	isStream bool, group string, other *LogOther) {
 	logger.LogInfo(c, common.LogText("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, common.LocalLogPreview(content)))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
+	requestBody := captureRequestBodyForLog(c, other)
 	otherStr := other.JSONString()
 	// 判断是否需要记录 IP
 	needRecordIp := false
@@ -314,10 +364,73 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 		RequestId:         requestId,
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
+		RequestBody:       requestBody,
 	}
 	err := createLog(log)
 	if err != nil {
 		logger.LogError(c, common.LogText("failed to record log: %s", err.Error()))
+	} else {
+		common.SetContextKey(c, constant.ContextKeyRelayLogRecorded, true)
+	}
+}
+
+// RecordRelayFallbackErrorLog writes the fallback error row for a relay
+// request that failed before any usage-log row was recorded (for example, no
+// available channel or an invalid request body). Called only by
+// RelayRequestBodyLog while request-body logging is enabled, so the audit
+// trail has no blind spot for pre-flight failures.
+func RecordRelayFallbackErrorLog(c *gin.Context) {
+	userId := c.GetInt("id")
+	if userId == 0 {
+		return
+	}
+	logger.LogInfo(c, common.LogText("record relay fallback error log: userId=%d, path=%s", userId, c.Request.URL.Path))
+	other := NewLogOther()
+	other.SetPublic("request_path", c.Request.URL.Path)
+	other.SetPublic("status_code", c.Writer.Status())
+	if reason := common.GetContextKeyString(c, constant.ContextKeyRelayFailReason); reason != "" {
+		other.SetAdmin("fail_reason", reason)
+	}
+	requestBody := captureRequestBodyForLog(c, other)
+	needRecordIp := false
+	if settingMap, err := GetUserSetting(userId, false); err == nil {
+		if settingMap.RecordIpLog {
+			needRecordIp = true
+		}
+	}
+	useTime := 0
+	if start := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime); !start.IsZero() {
+		useTime = int(time.Since(start).Seconds())
+	}
+	log := &Log{
+		UserId:    userId,
+		Username:  c.GetString("username"),
+		CreatedAt: common.GetTimestamp(),
+		Type:      LogTypeError,
+		// Fixed English sentence: stored fail reasons must be locale keys,
+		// and abort messages are localized per request language, so the
+		// localized reason lives in other.admin_info.fail_reason instead.
+		Content:   "Relay request failed before a usage log was recorded",
+		TokenName: c.GetString("token_name"),
+		ModelName: c.GetString("original_model"),
+		ChannelId: c.GetInt("channel_id"),
+		TokenId:   c.GetInt("token_id"),
+		UseTime:   useTime,
+		Group:     c.GetString("group"),
+		Ip: func() string {
+			if needRecordIp {
+				return c.ClientIP()
+			}
+			return ""
+		}(),
+		RequestId:   c.GetString(common.RequestIdKey),
+		Other:       other.JSONString(),
+		RequestBody: requestBody,
+	}
+	if err := createLog(log); err != nil {
+		logger.LogError(c, common.LogText("failed to record log: %s", err.Error()))
+	} else {
+		common.SetContextKey(c, constant.ContextKeyRelayLogRecorded, true)
 	}
 }
 
@@ -347,6 +460,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	createdAt := common.GetTimestamp()
 	other := params.Other
 	content := other.setContent(params.Content)
+	requestBody := captureRequestBodyForLog(c, other)
 	otherStr := other.JSONString()
 	// 判断是否需要记录 IP
 	needRecordIp := false
@@ -380,10 +494,13 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		RequestId:         requestId,
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
+		RequestBody:       requestBody,
 	}
 	err := createLog(log)
 	if err != nil {
 		logger.LogError(c, common.LogText("failed to record log: %s", err.Error()))
+	} else {
+		common.SetContextKey(c, constant.ContextKeyRelayLogRecorded, true)
 	}
 	if common.DataExportEnabled {
 		var cacheReadTokens, cacheCreationTokens int
@@ -536,7 +653,7 @@ func GetAllLogs(filter LogFilter, startIdx int, num int) (logs []*Log, total int
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		order = clickHouseLogOrder("logs.")
 	}
-	err = tx.Order(order).Limit(num).Offset(startIdx).Find(&logs).Error
+	err = tx.Omit("request_body").Order(order).Limit(num).Offset(startIdx).Find(&logs).Error
 	if err != nil {
 		return nil, 0, err
 	}
@@ -603,7 +720,7 @@ func GetUserLogs(userId int, filter LogFilter, startIdx int, num int) (logs []*L
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		order = clickHouseLogOrder("logs.")
 	}
-	err = tx.Order(order).Limit(num).Offset(startIdx).Find(&logs).Error
+	err = tx.Omit("request_body").Order(order).Limit(num).Offset(startIdx).Find(&logs).Error
 	if err != nil {
 		common.SysError(common.LogText("failed to search user logs: %s", err.Error()))
 		return nil, 0, common.NewMessage("Failed to query logs")
@@ -663,7 +780,7 @@ func streamLogs(tx *gorm.DB, order string, fn func(*Log) error) error {
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		order = clickHouseLogOrder("logs.")
 	}
-	rows, err := tx.Model(&Log{}).Order(order).Rows()
+	rows, err := tx.Model(&Log{}).Omit("request_body").Order(order).Rows()
 	if err != nil {
 		return err
 	}
